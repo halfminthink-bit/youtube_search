@@ -13,7 +13,9 @@ import argparse
 import time
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
-from dotenv import load_dotenv
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
@@ -21,14 +23,74 @@ from googleapiclient.errors import HttpError
 class YouTubeSearcher:
     """YouTube動画検索・フィルタリングクラス"""
 
-    def __init__(self, api_key: str):
-        """
-        初期化
+    # OAuth2認証のスコープ（読み取り専用）
+    SCOPES = ['https://www.googleapis.com/auth/youtube.readonly']
 
-        Args:
-            api_key: YouTube Data API v3のAPIキー
+    def __init__(self):
         """
-        self.youtube = build('youtube', 'v3', developerKey=api_key)
+        OAuth2認証でYouTube APIクライアントを初期化
+
+        credentials.jsonを使用してOAuth2認証を行い、
+        token.jsonにアクセストークンを保存・再利用します。
+        """
+        creds = None
+
+        # token.jsonが存在する場合は読み込み
+        if os.path.exists('token.json'):
+            try:
+                creds = Credentials.from_authorized_user_file('token.json', self.SCOPES)
+            except Exception as e:
+                print(f"⚠️  token.jsonの読み込みに失敗しました: {e}")
+                print("   新しい認証フローを開始します...")
+
+        # 認証情報が無効または存在しない場合
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                # トークンが期限切れの場合は更新
+                try:
+                    print("🔄 アクセストークンを更新中...")
+                    creds.refresh(Request())
+                    print("✅ トークンの更新に成功しました")
+                except Exception as e:
+                    print(f"⚠️  トークンの更新に失敗しました: {e}")
+                    print("   新しい認証フローを開始します...")
+                    creds = None
+
+            if not creds:
+                # 新規認証フロー
+                if not os.path.exists('credentials.json'):
+                    print("❌ エラー: credentials.json が見つかりません")
+                    print("\n【セットアップ手順】")
+                    print("1. Google Cloud Console (https://console.cloud.google.com/) にアクセス")
+                    print("2. プロジェクトを作成または選択")
+                    print("3. 「APIとサービス」→「ライブラリ」から「YouTube Data API v3」を有効化")
+                    print("4. 「認証情報」→「認証情報を作成」→「OAuth クライアント ID」を選択")
+                    print("5. アプリケーションの種類: 「デスクトップアプリ」を選択")
+                    print("6. 作成後、JSONをダウンロードして 'credentials.json' にリネーム")
+                    print("7. このスクリプトと同じディレクトリに配置してください")
+                    sys.exit(1)
+
+                try:
+                    print("\n🔐 OAuth2認証を開始します...")
+                    print("   ブラウザが自動で開きます。Googleアカウントでログインしてください。")
+                    flow = InstalledAppFlow.from_client_secrets_file(
+                        'credentials.json', self.SCOPES)
+                    creds = flow.run_local_server(port=0)
+                    print("✅ 認証に成功しました")
+                except Exception as e:
+                    print(f"❌ OAuth2認証に失敗しました: {e}")
+                    sys.exit(1)
+
+            # トークンを保存
+            try:
+                with open('token.json', 'w') as token:
+                    token.write(creds.to_json())
+                print("💾 アクセストークンを token.json に保存しました")
+            except Exception as e:
+                print(f"⚠️  トークンの保存に失敗しました: {e}")
+
+        # YouTube APIクライアントを構築
+        self.youtube = build('youtube', 'v3', credentials=creds)
         self.channel_cache = {}  # チャンネル情報のキャッシュ
 
     def search_videos(
@@ -289,18 +351,23 @@ class YouTubeSearcher:
 
 def main():
     """メイン処理"""
-    # 環境変数を読み込み
-    load_dotenv()
-
     # コマンドライン引数のパース
     parser = argparse.ArgumentParser(
-        description='YouTube動画検索・フィルタリングスクリプト',
+        description='YouTube動画検索・フィルタリングスクリプト（OAuth2認証版）',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 使用例:
   python search_youtube.py --keyword "料理"
   python search_youtube.py --keyword "プログラミング" --max-results 100
   python search_youtube.py --keyword "Python" --min-views 5000 --max-subscribers 10000
+
+初回実行時:
+  1. credentials.json がスクリプトと同じディレクトリに必要です
+  2. ブラウザが自動で開き、Googleアカウントで認証します
+  3. 認証後、token.json が自動生成されます
+
+2回目以降:
+  token.json を使用して自動認証されます
         """
     )
 
@@ -330,15 +397,8 @@ def main():
 
     args = parser.parse_args()
 
-    # API Keyの確認
-    api_key = os.getenv('YOUTUBE_API_KEY')
-    if not api_key:
-        print("❌ エラー: YOUTUBE_API_KEY が設定されていません")
-        print("   .envファイルに YOUTUBE_API_KEY=your_api_key を設定してください")
-        sys.exit(1)
-
     print("=" * 60)
-    print("YouTube動画検索・フィルタリングスクリプト")
+    print("YouTube動画検索・フィルタリングスクリプト（OAuth2認証版）")
     print("=" * 60)
     print(f"検索キーワード: {args.keyword}")
     print(f"最大取得数: {args.max_results}")
@@ -349,8 +409,8 @@ def main():
     print()
 
     try:
-        # YouTubeSearcherインスタンスを作成
-        searcher = YouTubeSearcher(api_key)
+        # YouTubeSearcherインスタンスを作成（OAuth2認証）
+        searcher = YouTubeSearcher()
 
         # 動画を検索
         videos = searcher.search_videos(

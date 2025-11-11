@@ -1,6 +1,10 @@
 # 環境変数ファイル（APIキー含む）
 .env
 
+# OAuth2認証情報
+credentials.json
+token.json
+
 # Python
 __pycache__/
 *.py[cod]
