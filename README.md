@@ -107,7 +107,7 @@ python search_youtube.py --keyword "料理"
 
 ```bash
 # 最大100件取得
-python search_youtube.py --keyword "プログラミング" --max-results 100
+python search_youtube.py --keyword "歴史" --max-results 1000
 
 # 再生回数と登録者数の条件を変更
 python search_youtube.py --keyword "Python" --min-views 5000 --max-subscribers 10000
