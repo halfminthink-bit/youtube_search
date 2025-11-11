@@ -11,7 +11,7 @@ import sys
 import csv
 import argparse
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
@@ -19,79 +19,121 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
+# OAuth2のスコープ（読み取り専用）
+SCOPES = ['https://www.googleapis.com/auth/youtube.readonly']
+
+
+def get_authenticated_service():
+    """
+    OAuth2認証を行い、認証済みのYouTube APIサービスを返す
+
+    自動で以下を実行:
+    - 初回実行: ブラウザで認証 → token.json生成
+    - 2回目以降: token.jsonから読み込み
+    - トークン期限切れ: 自動更新
+
+    Returns:
+        googleapiclient.discovery.Resource: YouTube APIサービス
+
+    Raises:
+        FileNotFoundError: credentials.jsonが見つからない場合
+    """
+    creds = None
+
+    # ステップ1: 既存のtoken.jsonを読み込む
+    if os.path.exists('token.json'):
+        try:
+            print("🔑 保存された認証情報を読み込み中...")
+            creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+        except Exception as e:
+            print(f"⚠️  token.jsonの読み込みに失敗しました: {e}")
+            print("   token.jsonを削除して再認証します...")
+            os.remove('token.json')
+            creds = None
+
+    # ステップ2: 認証情報の確認と更新
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            # ケースA: トークンが期限切れ → 自動更新
+            try:
+                print("🔄 認証トークンを更新中...")
+                creds.refresh(Request())
+                print("✅ トークン更新完了")
+            except Exception as e:
+                print(f"⚠️  トークンの更新に失敗しました: {e}")
+                print("   再認証が必要です。token.jsonを削除します...")
+                if os.path.exists('token.json'):
+                    os.remove('token.json')
+                creds = None
+
+        # ケースB: 初回実行 or トークン更新失敗
+        if not creds:
+            print("🔐 初回認証を開始します...")
+
+            # credentials.jsonの存在確認
+            if not os.path.exists('credentials.json'):
+                print("\n" + "="*60)
+                print("❌ エラー: credentials.json が見つかりません")
+                print("="*60)
+                print("\n【取得方法】")
+                print("1. Google Cloud Console にアクセス")
+                print("   https://console.cloud.google.com/")
+                print("2. YouTube Data API v3 を有効化")
+                print("3. 認証情報 → OAuth クライアント ID（デスクトップアプリ）を作成")
+                print("4. JSONをダウンロードし、credentials.json にリネーム")
+                print("5. このスクリプトと同じディレクトリに配置")
+                print("\n" + "="*60 + "\n")
+                raise FileNotFoundError("credentials.json が見つかりません")
+
+            # OAuth2フローを開始（ブラウザが開く）
+            print("📱 ブラウザが開きます。Googleアカウントで認証してください...")
+            flow = InstalledAppFlow.from_client_secrets_file(
+                'credentials.json',
+                SCOPES
+            )
+
+            try:
+                creds = flow.run_local_server(
+                    port=0,
+                    prompt='consent',
+                    success_message='認証が完了しました！このタブを閉じてください。'
+                )
+                print("✅ 認証完了")
+            except Exception as e:
+                print(f"❌ 認証に失敗しました: {e}")
+                raise
+
+        # ステップ3: 新しいトークンをtoken.jsonに保存
+        with open('token.json', 'w') as token:
+            token.write(creds.to_json())
+        print("💾 認証情報を token.json に保存しました")
+    else:
+        print("✅ 既存の認証情報を使用します")
+
+    # YouTube APIクライアントを構築
+    return build('youtube', 'v3', credentials=creds)
+
 
 class YouTubeSearcher:
     """YouTube動画検索・フィルタリングクラス"""
 
-    # OAuth2認証のスコープ（読み取り専用）
-    SCOPES = ['https://www.googleapis.com/auth/youtube.readonly']
-
     def __init__(self):
         """
-        OAuth2認証でYouTube APIクライアントを初期化
+        初期化
 
-        credentials.jsonを使用してOAuth2認証を行い、
-        token.jsonにアクセストークンを保存・再利用します。
+        OAuth2認証を行い、YouTube APIクライアントを初期化します。
+        初回実行時はブラウザで認証、2回目以降は自動認証されます。
         """
-        creds = None
+        print("\n" + "="*60)
+        print("🔐 YouTube API 認証処理")
+        print("="*60 + "\n")
 
-        # token.jsonが存在する場合は読み込み
-        if os.path.exists('token.json'):
-            try:
-                creds = Credentials.from_authorized_user_file('token.json', self.SCOPES)
-            except Exception as e:
-                print(f"⚠️  token.jsonの読み込みに失敗しました: {e}")
-                print("   新しい認証フローを開始します...")
+        self.youtube = get_authenticated_service()
+        self.channel_cache = {}
 
-        # 認証情報が無効または存在しない場合
-        if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
-                # トークンが期限切れの場合は更新
-                try:
-                    print("🔄 アクセストークンを更新中...")
-                    creds.refresh(Request())
-                    print("✅ トークンの更新に成功しました")
-                except Exception as e:
-                    print(f"⚠️  トークンの更新に失敗しました: {e}")
-                    print("   新しい認証フローを開始します...")
-                    creds = None
-
-            if not creds:
-                # 新規認証フロー
-                if not os.path.exists('credentials.json'):
-                    print("❌ エラー: credentials.json が見つかりません")
-                    print("\n【セットアップ手順】")
-                    print("1. Google Cloud Console (https://console.cloud.google.com/) にアクセス")
-                    print("2. プロジェクトを作成または選択")
-                    print("3. 「APIとサービス」→「ライブラリ」から「YouTube Data API v3」を有効化")
-                    print("4. 「認証情報」→「認証情報を作成」→「OAuth クライアント ID」を選択")
-                    print("5. アプリケーションの種類: 「デスクトップアプリ」を選択")
-                    print("6. 作成後、JSONをダウンロードして 'credentials.json' にリネーム")
-                    print("7. このスクリプトと同じディレクトリに配置してください")
-                    sys.exit(1)
-
-                try:
-                    print("\n🔐 OAuth2認証を開始します...")
-                    print("   ブラウザが自動で開きます。Googleアカウントでログインしてください。")
-                    flow = InstalledAppFlow.from_client_secrets_file(
-                        'credentials.json', self.SCOPES)
-                    creds = flow.run_local_server(port=0)
-                    print("✅ 認証に成功しました")
-                except Exception as e:
-                    print(f"❌ OAuth2認証に失敗しました: {e}")
-                    sys.exit(1)
-
-            # トークンを保存
-            try:
-                with open('token.json', 'w') as token:
-                    token.write(creds.to_json())
-                print("💾 アクセストークンを token.json に保存しました")
-            except Exception as e:
-                print(f"⚠️  トークンの保存に失敗しました: {e}")
-
-        # YouTube APIクライアントを構築
-        self.youtube = build('youtube', 'v3', credentials=creds)
-        self.channel_cache = {}  # チャンネル情報のキャッシュ
+        print("\n" + "="*60)
+        print("✅ 認証完了 - API使用準備OK")
+        print("="*60 + "\n")
 
     def search_videos(
         self,
@@ -113,7 +155,7 @@ class YouTubeSearcher:
         print(f"🔍 検索中: キーワード='{keyword}', 最大{max_results}件")
 
         # 投稿日の下限を計算（N ヶ月前）
-        published_after = datetime.utcnow() - timedelta(days=30 * published_after_months)
+        published_after = datetime.now(timezone.utc) - timedelta(days=30 * published_after_months)
         published_after_str = published_after.strftime('%Y-%m-%dT%H:%M:%SZ')
 
         results = []
