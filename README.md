@@ -10,6 +10,7 @@ YouTube Data API v3を使用して、特定の条件に合う動画を検索・�
 - 投稿日フィルタ（半年以内の動画）
 - チャンネル登録者数によるフィルタ（デフォルト: 5,000人以下）
 - 動画再生回数によるフィルタ（デフォルト: 10,000回以上）
+- **YouTube Shorts除外機能**（60秒以下の動画を除外）
 - CSV形式での結果出力（Excel対応のUTF-8 BOM付き）
 - チャンネル情報のキャッシュによる効率的なAPI利用
 - エラーハンドリング・リトライ処理
@@ -110,6 +111,9 @@ python search_youtube.py --keyword "プログラミング" --max-results 100
 
 # 再生回数と登録者数の条件を変更
 python search_youtube.py --keyword "Python" --min-views 5000 --max-subscribers 10000
+
+# Shortsを除外して検索
+python search_youtube.py --keyword "歴史" --exclude-shorts
 ```
 
 ### コマンドライン引数
@@ -120,6 +124,7 @@ python search_youtube.py --keyword "Python" --min-views 5000 --max-subscribers 1
 | `--max-results` | 検索結果の最大取得数 | 50 | ❌ |
 | `--min-views` | 最小再生回数 | 10000 | ❌ |
 | `--max-subscribers` | 最大登録者数 | 5000 | ❌ |
+| `--exclude-shorts` | YouTube Shorts（60秒以下）を除外 | False | ❌ |
 
 ### ヘルプ表示
 
@@ -143,14 +148,15 @@ python search_youtube.py --help
 | url | 動画のURL（https://www.youtube.com/watch?v=...） |
 | チャンネル名 | チャンネルの名前 |
 | 再生回数 | 動画の再生回数 |
+| 動画の長さ（秒） | 動画の長さ（秒単位） |
 | 登録者数 | チャンネルの登録者数 |
 
 ### サンプル出力
 
 ```csv
-動画タイトル,url,チャンネル名,再生回数,登録者数
-初心者でも簡単！パスタの作り方,https://www.youtube.com/watch?v=abc123,料理チャンネル,15000,3000
-時短レシピ！10分でできるカレー,https://www.youtube.com/watch?v=def456,クッキングTV,25000,4500
+動画タイトル,url,チャンネル名,再生回数,動画の長さ（秒）,登録者数
+初心者でも簡単！パスタの作り方,https://www.youtube.com/watch?v=abc123,料理チャンネル,15000,180,3000
+時短レシピ！10分でできるカレー,https://www.youtube.com/watch?v=def456,クッキングTV,25000,600,4500
 ```
 
 ## API クオータ制限について
