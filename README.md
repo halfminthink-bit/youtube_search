@@ -1,6 +1,8 @@
-# YouTube動画検索・フィルタリングスクリプト
+# YouTube動画検索・フィルタリングスクリプト（OAuth2認証版）
 
 YouTube Data API v3を使用して、特定の条件に合う動画を検索・フィルタリングし、CSV形式で出力するPythonスクリプトです。
+
+**⚠️ OAuth2認証対応版**: YouTube Data API v3のsearch.listエンドポイントがAPI Key認証をサポートしなくなったため、OAuth2認証に対応しました。
 
 ## 機能
 
@@ -11,6 +13,7 @@ YouTube Data API v3を使用して、特定の条件に合う動画を検索・�
 - CSV形式での結果出力（Excel対応のUTF-8 BOM付き）
 - チャンネル情報のキャッシュによる効率的なAPI利用
 - エラーハンドリング・リトライ処理
+- **OAuth2認証**（初回実行後は自動認証）
 
 ## セットアップ
 
@@ -20,31 +23,76 @@ YouTube Data API v3を使用して、特定の条件に合う動画を検索・�
 pip install -r requirements.txt
 ```
 
-### 2. YouTube Data API v3のAPIキー取得
+### 2. Google Cloud Consoleでの設定
+
+#### 2-1. プロジェクトの作成とAPI有効化
 
 1. [Google Cloud Console](https://console.cloud.google.com/) にアクセス
 2. プロジェクトを作成（または既存のプロジェクトを選択）
 3. 「APIとサービス」→「ライブラリ」から「YouTube Data API v3」を検索して有効化
-4. 「APIとサービス」→「認証情報」から「認証情報を作成」→「APIキー」を選択
-5. 作成されたAPIキーをコピー
 
-詳細な手順は[公式ドキュメント](https://developers.google.com/youtube/v3/getting-started)を参照してください。
+#### 2-2. OAuth2クライアントIDの作成
 
-### 3. 環境変数の設定
+1. 「APIとサービス」→「認証情報」を開く
+2. 「認証情報を作成」→「OAuth クライアント ID」を選択
+3. 同意画面の設定を求められた場合:
+   - 「OAuth 同意画面」タブをクリック
+   - ユーザータイプ: 「外部」を選択（個人利用の場合）
+   - アプリ名、ユーザーサポートメール、デベロッパー連絡先を入力
+   - スコープは設定不要（デフォルトのまま）
+   - 「保存して次へ」で完了
+4. 「認証情報」タブに戻り、再度「認証情報を作成」→「OAuth クライアント ID」を選択
+5. アプリケーションの種類: **「デスクトップアプリ」**を選択
+6. 名前を入力（例: YouTube Search Script）
+7. 「作成」をクリック
 
-`.env.example` をコピーして `.env` ファイルを作成し、取得したAPIキーを設定します。
+#### 2-3. 認証情報のダウンロード
+
+1. 作成したOAuth クライアントIDの右側にある「⬇ダウンロード」アイコンをクリック
+2. JSONファイルがダウンロードされる
+3. ダウンロードしたJSONファイルを `credentials.json` にリネーム
+4. このスクリプトと同じディレクトリに配置
 
 ```bash
-cp .env.example .env
+# ファイル構成例
+youtube_search/
+├── search_youtube.py
+├── credentials.json  ← ここに配置
+├── requirements.txt
+└── README.md
 ```
 
-`.env` ファイルを編集:
+**注意**: `credentials.json` は機密情報です。Gitにコミットしたり、他人と共有しないでください。
 
-```
-YOUTUBE_API_KEY=ここに取得したAPIキーを貼り付け
+### 3. 初回実行（OAuth2認証）
+
+初回実行時にブラウザが自動で開き、Googleアカウントでの認証が求められます。
+
+```bash
+python search_youtube.py --keyword "料理"
 ```
 
-**注意**: `.env` ファイルは `.gitignore` に追加し、リポジトリにコミットしないでください。
+#### 認証フロー
+
+1. スクリプトを実行すると、ブラウザが自動で開きます
+2. Googleアカウントでログイン
+3. 「このアプリは確認されていません」という警告が表示される場合:
+   - 「詳細」をクリック
+   - 「（アプリ名）に移動（安全ではないページ）」をクリック
+   - これは個人利用のため問題ありません
+4. 「YouTube Data API v3 YouTube アカウントの閲覧」の権限を許可
+5. 「許可」をクリック
+6. 認証完了後、`token.json` が自動生成されます
+
+### 4. 2回目以降の実行
+
+`token.json` が保存されているため、ブラウザを開かずに自動認証されます。
+
+```bash
+python search_youtube.py --keyword "料理"
+```
+
+トークンが期限切れの場合は自動更新されます。
 
 ## 使い方
 
@@ -150,13 +198,34 @@ YouTube Data API v3には1日あたりのクオータ制限（デフォルト: 1
 
 ## トラブルシューティング
 
-### API Keyが設定されていないエラー
+### credentials.json が見つからないエラー
 
 ```
-❌ エラー: YOUTUBE_API_KEY が設定されていません
+❌ エラー: credentials.json が見つかりません
 ```
 
-→ `.env` ファイルに正しくAPIキーが設定されているか確認してください。
+→ Google Cloud ConsoleからOAuth2クライアントIDをダウンロードし、`credentials.json` にリネームしてスクリプトと同じディレクトリに配置してください。
+
+### OAuth2認証失敗エラー
+
+```
+❌ OAuth2認証に失敗しました
+```
+
+→ ブラウザで「許可」をクリックしたか確認してください。認証をキャンセルすると失敗します。
+
+### token.json の読み込みエラー
+
+```
+⚠️ token.jsonの読み込みに失敗しました
+```
+
+→ `token.json` が破損している可能性があります。削除して再度認証してください。
+
+```bash
+rm token.json
+python search_youtube.py --keyword "料理"
+```
 
 ### クオータ超過エラー
 
@@ -188,6 +257,10 @@ YouTube Data API v3には1日あたりのクオータ制限（デフォルト: 1
 - **API利用規約**: YouTube APIの[利用規約](https://developers.google.com/youtube/terms/api-services-terms-of-service)を遵守してください
 - **商用利用**: 商用利用する場合は、YouTubeの利用規約を確認してください
 - **スクレイピング禁止**: このスクリプトは公式APIを使用していますが、過度な使用は控えてください
+- **OAuth2認証**:
+  - `credentials.json` と `token.json` は機密情報です。Gitにコミットしたり、他人と共有しないでください
+  - 「このアプリは確認されていません」という警告は、個人利用の場合は問題ありません
+  - 本番環境や不特定多数に公開する場合は、Googleの審査が必要です
 
 ## ライセンス
 
@@ -199,10 +272,11 @@ MIT License
 
 ```
 youtube_search/
-├── search_youtube.py      # メインスクリプト
-├── .env.example           # API Key設定例
-├── .env                   # API Key（git管理外）
+├── search_youtube.py      # メインスクリプト（OAuth2認証版）
+├── credentials.json       # OAuth2クライアントID（git管理外）
+├── token.json            # アクセストークン（自動生成・git管理外）
 ├── requirements.txt       # 依存ライブラリ
+├── .gitignore            # git除外ファイル設定
 └── README.md             # このファイル
 ```
 
