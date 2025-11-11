@@ -11,6 +11,7 @@ import sys
 import csv
 import argparse
 import time
+import isodate
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -21,6 +22,32 @@ from googleapiclient.errors import HttpError
 
 # OAuth2のスコープ（読み取り専用）
 SCOPES = ['https://www.googleapis.com/auth/youtube.readonly']
+
+
+def parse_duration(duration: str) -> int:
+    """
+    ISO 8601形式のdurationを秒数に変換
+
+    Args:
+        duration: ISO 8601形式の文字列（例: 'PT1M30S', 'PT45S', 'PT1H2M3S'）
+
+    Returns:
+        秒数（int）
+
+    Examples:
+        >>> parse_duration('PT1M30S')
+        90
+        >>> parse_duration('PT45S')
+        45
+        >>> parse_duration('PT1H2M3S')
+        3723
+    """
+    try:
+        duration_obj = isodate.parse_duration(duration)
+        return int(duration_obj.total_seconds())
+    except Exception as e:
+        print(f"⚠️  duration のパースに失敗しました: {duration}, エラー: {e}")
+        return 0
 
 
 def get_authenticated_service():
@@ -200,15 +227,15 @@ class YouTubeSearcher:
         print(f"✅ 検索完了: {len(results)}件の動画を取得")
         return results
 
-    def get_video_statistics(self, video_ids: List[str]) -> Dict[str, int]:
+    def get_video_statistics(self, video_ids: List[str]) -> Dict[str, dict]:
         """
-        動画の統計情報（再生回数など）を取得
+        動画の統計情報（再生回数・動画の長さなど）を取得
 
         Args:
             video_ids: 動画IDのリスト
 
         Returns:
-            video_id -> 再生回数 の辞書
+            video_id -> {'view_count': int, 'duration_seconds': int} の辞書
         """
         print(f"📊 動画統計情報を取得中: {len(video_ids)}件")
 
@@ -219,7 +246,7 @@ class YouTubeSearcher:
             batch = video_ids[i:i+50]
 
             request = self.youtube.videos().list(
-                part='statistics',
+                part='statistics,contentDetails',
                 id=','.join(batch)
             )
 
@@ -228,7 +255,15 @@ class YouTubeSearcher:
             for item in response.get('items', []):
                 video_id = item['id']
                 view_count = int(item['statistics'].get('viewCount', 0))
-                statistics[video_id] = view_count
+
+                # duration を秒数に変換
+                duration = item['contentDetails'].get('duration', 'PT0S')
+                duration_seconds = parse_duration(duration)
+
+                statistics[video_id] = {
+                    'view_count': view_count,
+                    'duration_seconds': duration_seconds
+                }
 
         print(f"✅ 動画統計情報の取得完了")
         return statistics
@@ -278,7 +313,8 @@ class YouTubeSearcher:
         self,
         videos: List[Dict],
         min_views: int,
-        max_subscribers: int
+        max_subscribers: int,
+        exclude_shorts: bool = False
     ) -> List[Dict]:
         """
         動画をフィルタリング
@@ -287,11 +323,14 @@ class YouTubeSearcher:
             videos: 動画情報のリスト
             min_views: 最小再生回数
             max_subscribers: 最大登録者数
+            exclude_shorts: Shorts（60秒以下の動画）を除外するか
 
         Returns:
             条件に合致する動画のリスト
         """
         print(f"🔍 フィルタリング中: 再生回数>={min_views}, 登録者数<={max_subscribers}")
+        if exclude_shorts:
+            print("   ⏱️  Shorts（60秒以下）を除外")
 
         # 動画IDとチャンネルIDを抽出
         video_ids = [v['video_id'] for v in videos]
@@ -303,24 +342,35 @@ class YouTubeSearcher:
 
         # フィルタリング
         filtered = []
+        shorts_count = 0
         for video in videos:
             video_id = video['video_id']
             channel_id = video['channel_id']
 
-            view_count = video_stats.get(video_id, 0)
+            stats = video_stats.get(video_id, {'view_count': 0, 'duration_seconds': 0})
+            view_count = stats['view_count']
+            duration_seconds = stats['duration_seconds']
             subscriber_count = channel_subscribers.get(channel_id)
 
             # 登録者数が取得できない場合は除外
             if subscriber_count is None:
                 continue
 
+            # Shorts除外チェック
+            if exclude_shorts and duration_seconds <= 60:
+                shorts_count += 1
+                continue
+
             # 条件チェック
             if view_count >= min_views and subscriber_count <= max_subscribers:
                 video['view_count'] = view_count
+                video['duration_seconds'] = duration_seconds
                 video['subscriber_count'] = subscriber_count
                 filtered.append(video)
 
         print(f"✅ フィルタリング完了: {len(filtered)}件が条件に合致")
+        if exclude_shorts:
+            print(f"   （Shorts除外: {shorts_count}件）")
         return filtered
 
     def export_to_csv(self, videos: List[Dict], keyword: str) -> str:
@@ -350,7 +400,7 @@ class YouTubeSearcher:
             writer = csv.writer(f)
 
             # ヘッダー
-            writer.writerow(['動画タイトル', 'url', 'チャンネル名', '再生回数', '登録者数'])
+            writer.writerow(['動画タイトル', 'url', 'チャンネル名', '再生回数', '動画の長さ（秒）', '登録者数'])
 
             # データ
             for video in videos:
@@ -360,6 +410,7 @@ class YouTubeSearcher:
                     url,
                     video['channel_title'],
                     video['view_count'],
+                    video['duration_seconds'],
                     video['subscriber_count']
                 ])
 
@@ -439,6 +490,11 @@ def main():
         default=5000,
         help='最大登録者数（デフォルト: 5000）'
     )
+    parser.add_argument(
+        '--exclude-shorts',
+        action='store_true',
+        help='YouTube Shorts（60秒以下の動画）を除外する'
+    )
 
     args = parser.parse_args()
 
@@ -450,6 +506,8 @@ def main():
     print(f"最小再生回数: {args.min_views:,}")
     print(f"最大登録者数: {args.max_subscribers:,}")
     print(f"投稿期間: 半年以内（6ヶ月前〜現在）")
+    if args.exclude_shorts:
+        print(f"Shorts除外: 有効（60秒以下の動画を除外）")
     print("=" * 60)
     print()
 
@@ -472,7 +530,8 @@ def main():
         filtered_videos = searcher.filter_videos(
             videos=videos,
             min_views=args.min_views,
-            max_subscribers=args.max_subscribers
+            max_subscribers=args.max_subscribers,
+            exclude_shorts=args.exclude_shorts
         )
 
         if not filtered_videos:
