@@ -339,11 +339,14 @@ class YouTubeSearcher:
         # ファイル名に使えない文字を置換
         safe_keyword = "".join(c if c.isalnum() or c in (' ', '_', '-') else '_' for c in keyword)
         filename = f"youtube_results_{safe_keyword}_{timestamp}.csv"
+        output_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'output')
+        os.makedirs(output_dir, exist_ok=True)
+        file_path = os.path.join(output_dir, filename)
 
-        print(f"💾 CSV出力中: {filename}")
+        print(f"💾 CSV出力中: {os.path.join('output', filename)}")
 
         # UTF-8 BOM付きで出力（Excel対応）
-        with open(filename, 'w', encoding='utf-8-sig', newline='') as f:
+        with open(file_path, 'w', encoding='utf-8-sig', newline='') as f:
             writer = csv.writer(f)
 
             # ヘッダー
@@ -360,8 +363,8 @@ class YouTubeSearcher:
                     video['subscriber_count']
                 ])
 
-        print(f"✅ CSV出力完了: {filename}")
-        return filename
+        print(f"✅ CSV出力完了: {os.path.join('output', filename)}")
+        return os.path.join('output', filename)
 
     def _execute_with_retry(self, request, max_retries: int = 3):
         """
