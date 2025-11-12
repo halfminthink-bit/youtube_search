@@ -1,0 +1,635 @@
+#!/usr/bin/env python3
+"""
+YouTube動画検索・フィルタリングスクリプト（バズ動画発見版）
+
+キーワードに依存せず、伸びている動画（登録者数に対して再生回数が多い動画）を
+発見するツール。
+
+特徴:
+- 汎用的なひらがなで広範囲に検索（"の", "を", "に", "は", "！"など）
+- 日付順ソート（最新順）
+- チャンネル登録者 ≤ 10,000人（デフォルト）
+- 再生回数 ≥ 登録者数 × 3（バズっている動画を発見）
+- YouTube Shorts除外機能
+"""
+
+import os
+import sys
+import csv
+import argparse
+import time
+import isodate
+from datetime import datetime, timedelta, timezone
+from typing import List, Dict, Optional
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+
+# OAuth2のスコープ（読み取り専用）
+SCOPES = ['https://www.googleapis.com/auth/youtube.readonly']
+
+
+def parse_duration(duration: str) -> int:
+    """
+    ISO 8601形式のdurationを秒数に変換
+
+    Args:
+        duration: ISO 8601形式の文字列（例: 'PT1M30S', 'PT45S', 'PT1H2M3S'）
+
+    Returns:
+        秒数（int）
+
+    Examples:
+        >>> parse_duration('PT1M30S')
+        90
+        >>> parse_duration('PT45S')
+        45
+        >>> parse_duration('PT1H2M3S')
+        3723
+    """
+    try:
+        duration_obj = isodate.parse_duration(duration)
+        return int(duration_obj.total_seconds())
+    except Exception as e:
+        print(f"⚠️  duration のパースに失敗しました: {duration}, エラー: {e}")
+        return 0
+
+
+def get_authenticated_service():
+    """
+    OAuth2認証を行い、認証済みのYouTube APIサービスを返す
+
+    自動で以下を実行:
+    - 初回実行: ブラウザで認証 → token.json生成
+    - 2回目以降: token.jsonから読み込み
+    - トークン期限切れ: 自動更新
+
+    Returns:
+        googleapiclient.discovery.Resource: YouTube APIサービス
+
+    Raises:
+        FileNotFoundError: credentials.jsonが見つからない場合
+    """
+    creds = None
+
+    # ステップ1: 既存のtoken.jsonを読み込む
+    if os.path.exists('token.json'):
+        try:
+            print("🔑 保存された認証情報を読み込み中...")
+            creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+        except Exception as e:
+            print(f"⚠️  token.jsonの読み込みに失敗しました: {e}")
+            print("   token.jsonを削除して再認証します...")
+            os.remove('token.json')
+            creds = None
+
+    # ステップ2: 認証情報の確認と更新
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            # ケースA: トークンが期限切れ → 自動更新
+            try:
+                print("🔄 認証トークンを更新中...")
+                creds.refresh(Request())
+                print("✅ トークン更新完了")
+            except Exception as e:
+                print(f"⚠️  トークンの更新に失敗しました: {e}")
+                print("   再認証が必要です。token.jsonを削除します...")
+                if os.path.exists('token.json'):
+                    os.remove('token.json')
+                creds = None
+
+        # ケースB: 初回実行 or トークン更新失敗
+        if not creds:
+            print("🔐 初回認証を開始します...")
+
+            # credentials.jsonの存在確認
+            if not os.path.exists('credentials.json'):
+                print("\n" + "="*60)
+                print("❌ エラー: credentials.json が見つかりません")
+                print("="*60)
+                print("\n【取得方法】")
+                print("1. Google Cloud Console にアクセス")
+                print("   https://console.cloud.google.com/")
+                print("2. YouTube Data API v3 を有効化")
+                print("3. 認証情報 → OAuth クライアント ID（デスクトップアプリ）を作成")
+                print("4. JSONをダウンロードし、credentials.json にリネーム")
+                print("5. このスクリプトと同じディレクトリに配置")
+                print("\n" + "="*60 + "\n")
+                raise FileNotFoundError("credentials.json が見つかりません")
+
+            # OAuth2フローを開始（ブラウザが開く）
+            print("📱 ブラウザが開きます。Googleアカウントで認証してください...")
+            flow = InstalledAppFlow.from_client_secrets_file(
+                'credentials.json',
+                SCOPES
+            )
+
+            try:
+                creds = flow.run_local_server(
+                    port=0,
+                    prompt='consent',
+                    success_message='認証が完了しました！このタブを閉じてください。'
+                )
+                print("✅ 認証完了")
+            except Exception as e:
+                print(f"❌ 認証に失敗しました: {e}")
+                raise
+
+        # ステップ3: 新しいトークンをtoken.jsonに保存
+        with open('token.json', 'w') as token:
+            token.write(creds.to_json())
+        print("💾 認証情報を token.json に保存しました")
+    else:
+        print("✅ 既存の認証情報を使用します")
+
+    # YouTube APIクライアントを構築
+    return build('youtube', 'v3', credentials=creds)
+
+
+class YouTubeBuzzSearcher:
+    """YouTube動画検索・フィルタリングクラス（バズ動画発見版）"""
+
+    def __init__(self):
+        """
+        初期化
+
+        OAuth2認証を行い、YouTube APIクライアントを初期化します。
+        初回実行時はブラウザで認証、2回目以降は自動認証されます。
+        """
+        print("\n" + "="*60)
+        print("🔐 YouTube API 認証処理")
+        print("="*60 + "\n")
+
+        self.youtube = get_authenticated_service()
+        self.channel_cache = {}
+
+        print("\n" + "="*60)
+        print("✅ 認証完了 - API使用準備OK")
+        print("="*60 + "\n")
+
+    def search_videos(
+        self,
+        keyword: str = 'の',
+        max_results: int = 50,
+        published_after_months: int = 6
+    ) -> List[Dict]:
+        """
+        汎用的なキーワードで動画を検索（日付順）
+
+        Args:
+            keyword: 検索キーワード（デフォルト: 'の'）
+            max_results: 取得する動画数（最大50）
+            published_after_months: 何ヶ月前からの動画を取得するか
+
+        Returns:
+            検索結果のリスト（video_id, title, channel_id, channel_title, published_at を含む）
+        """
+        print(f"🔍 検索中: キーワード='{keyword}', 最大{max_results}件（日付順）")
+
+        # 投稿日の下限を計算（N ヶ月前）
+        published_after = datetime.now(timezone.utc) - timedelta(days=30 * published_after_months)
+        published_after_str = published_after.strftime('%Y-%m-%dT%H:%M:%SZ')
+
+        results = []
+        next_page_token = None
+
+        try:
+            while len(results) < max_results:
+                # search.list APIを呼び出し（日付順でソート）
+                request = self.youtube.search().list(
+                    part='snippet',
+                    q=keyword,
+                    type='video',
+                    publishedAfter=published_after_str,
+                    maxResults=min(50, max_results - len(results)),  # 最大50件/回
+                    pageToken=next_page_token,
+                    order='date',  # 日付順（最新順）
+                    relevanceLanguage='ja'  # 日本語優先
+                )
+
+                response = self._execute_with_retry(request)
+
+                # 結果を整形
+                for item in response.get('items', []):
+                    results.append({
+                        'video_id': item['id']['videoId'],
+                        'title': item['snippet']['title'],
+                        'channel_id': item['snippet']['channelId'],
+                        'channel_title': item['snippet']['channelTitle'],
+                        'published_at': item['snippet']['publishedAt']
+                    })
+
+                # 次のページがあるかチェック
+                next_page_token = response.get('nextPageToken')
+                if not next_page_token:
+                    break
+
+        except HttpError as e:
+            if e.resp.status == 403:
+                print("❌ エラー: API クオータを超過しました")
+                sys.exit(1)
+            else:
+                raise
+
+        print(f"✅ 検索完了: {len(results)}件の動画を取得")
+        return results
+
+    def get_video_statistics(self, video_ids: List[str]) -> Dict[str, dict]:
+        """
+        動画の統計情報（再生回数・動画の長さなど）を取得
+
+        Args:
+            video_ids: 動画IDのリスト
+
+        Returns:
+            video_id -> {'view_count': int, 'duration_seconds': int} の辞書
+        """
+        print(f"📊 動画統計情報を取得中: {len(video_ids)}件")
+
+        statistics = {}
+
+        # 50件ずつバッチ処理
+        for i in range(0, len(video_ids), 50):
+            batch = video_ids[i:i+50]
+
+            request = self.youtube.videos().list(
+                part='statistics,contentDetails',
+                id=','.join(batch)
+            )
+
+            response = self._execute_with_retry(request)
+
+            for item in response.get('items', []):
+                video_id = item['id']
+                view_count = int(item['statistics'].get('viewCount', 0))
+
+                # duration を秒数に変換
+                duration = item['contentDetails'].get('duration', 'PT0S')
+                duration_seconds = parse_duration(duration)
+
+                statistics[video_id] = {
+                    'view_count': view_count,
+                    'duration_seconds': duration_seconds
+                }
+
+        print(f"✅ 動画統計情報の取得完了")
+        return statistics
+
+    def get_channel_subscribers(self, channel_ids: List[str]) -> Dict[str, Optional[int]]:
+        """
+        チャンネルの登録者数を取得（キャッシュあり）
+
+        Args:
+            channel_ids: チャンネルIDのリスト
+
+        Returns:
+            channel_id -> 登録者数 の辞書（取得できない場合はNone）
+        """
+        # キャッシュにない channel_id だけを取得
+        uncached_ids = [cid for cid in channel_ids if cid not in self.channel_cache]
+
+        if uncached_ids:
+            print(f"👥 チャンネル登録者数を取得中: {len(uncached_ids)}件（キャッシュ: {len(channel_ids) - len(uncached_ids)}件）")
+
+            # 50件ずつバッチ処理
+            for i in range(0, len(uncached_ids), 50):
+                batch = uncached_ids[i:i+50]
+
+                request = self.youtube.channels().list(
+                    part='statistics',
+                    id=','.join(batch)
+                )
+
+                response = self._execute_with_retry(request)
+
+                for item in response.get('items', []):
+                    channel_id = item['id']
+                    # hiddenSubscriberCount の場合は登録者数が取得できない
+                    if item['statistics'].get('hiddenSubscriberCount', False):
+                        self.channel_cache[channel_id] = None
+                    else:
+                        subscriber_count = int(item['statistics'].get('subscriberCount', 0))
+                        self.channel_cache[channel_id] = subscriber_count
+
+            print(f"✅ チャンネル登録者数の取得完了")
+
+        # キャッシュから返す
+        return {cid: self.channel_cache.get(cid) for cid in channel_ids}
+
+    def filter_videos(
+        self,
+        videos: List[Dict],
+        max_subscribers: int = 10000,
+        buzz_multiplier: float = 3.0,
+        exclude_shorts: bool = False
+    ) -> List[Dict]:
+        """
+        条件に合う動画をフィルタリング
+
+        条件:
+        1. チャンネル登録者数 ≤ max_subscribers（デフォルト: 10,000）
+        2. 再生回数 ≥ 登録者数 × buzz_multiplier（デフォルト: 3.0）
+        3. （オプション）YouTube Shorts（60秒以下）を除外
+
+        Args:
+            videos: 動画情報のリスト
+            max_subscribers: 最大登録者数
+            buzz_multiplier: バズ判定倍率
+            exclude_shorts: Shorts（60秒以下の動画）を除外するか
+
+        Returns:
+            フィルタリング後の動画リスト
+        """
+        print(f"🔍 フィルタリング中:")
+        print(f"   条件1: 登録者数 ≤ {max_subscribers:,}人")
+        print(f"   条件2: 再生回数 ≥ 登録者数 × {buzz_multiplier}")
+        if exclude_shorts:
+            print(f"   条件3: Shorts（60秒以下）を除外")
+
+        # 動画IDとチャンネルIDを抽出
+        video_ids = [v['video_id'] for v in videos]
+        channel_ids = list(set([v['channel_id'] for v in videos]))
+
+        # 統計情報を取得
+        video_stats = self.get_video_statistics(video_ids)
+        channel_subscribers = self.get_channel_subscribers(channel_ids)
+
+        # フィルタリング
+        filtered = []
+        shorts_count = 0
+        hidden_subscriber_count = 0
+
+        for video in videos:
+            video_id = video['video_id']
+            channel_id = video['channel_id']
+
+            stats = video_stats.get(video_id, {'view_count': 0, 'duration_seconds': 0})
+            view_count = stats['view_count']
+            duration_seconds = stats['duration_seconds']
+            subscriber_count = channel_subscribers.get(channel_id)
+
+            # 登録者数が取得できない場合は除外
+            if subscriber_count is None:
+                hidden_subscriber_count += 1
+                continue
+
+            # Shorts除外チェック
+            if exclude_shorts and duration_seconds <= 60:
+                shorts_count += 1
+                continue
+
+            # 条件1: チャンネル登録者数チェック
+            if subscriber_count > max_subscribers:
+                continue
+
+            # 条件2: 再生回数 ≥ 登録者数 × buzz_multiplier
+            required_views = subscriber_count * buzz_multiplier
+            if view_count >= required_views:
+                buzz_ratio = view_count / subscriber_count if subscriber_count > 0 else 0
+                video['view_count'] = view_count
+                video['duration_seconds'] = duration_seconds
+                video['subscriber_count'] = subscriber_count
+                video['buzz_ratio'] = buzz_ratio
+                filtered.append(video)
+                print(f"  ✅ {video['title'][:40]}... (登録者: {subscriber_count:,}人, 再生: {view_count:,}回, 倍率: {buzz_ratio:.1f}x)")
+
+        print(f"\n✅ フィルタリング完了: {len(filtered)}件が条件に合致")
+        if hidden_subscriber_count > 0:
+            print(f"   （登録者数非公開: {hidden_subscriber_count}件をスキップ）")
+        if exclude_shorts:
+            print(f"   （Shorts除外: {shorts_count}件）")
+
+        return filtered
+
+    def export_to_csv(self, videos: List[Dict], keyword: str) -> str:
+        """
+        CSV形式で出力
+
+        CSV列:
+        - 動画タイトル
+        - URL
+        - チャンネル名
+        - 再生回数
+        - 登録者数
+        - バズ倍率（再生回数 ÷ 登録者数）
+        - 動画の長さ（秒）
+        - 投稿日
+
+        Args:
+            videos: 動画情報のリスト
+            keyword: 検索キーワード（ファイル名に使用）
+
+        Returns:
+            出力したファイル名
+        """
+        # ファイル名を生成（タイムスタンプ付き）
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        # ファイル名に使えない文字を置換
+        safe_keyword = "".join(c if c.isalnum() or c in (' ', '_', '-') else '_' for c in keyword)
+        filename = f"youtube_buzz_videos_{safe_keyword}_{timestamp}.csv"
+        output_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'output')
+        os.makedirs(output_dir, exist_ok=True)
+        file_path = os.path.join(output_dir, filename)
+
+        print(f"💾 CSV出力中: {os.path.join('output', filename)}")
+
+        # UTF-8 BOM付きで出力（Excel対応）
+        with open(file_path, 'w', encoding='utf-8-sig', newline='') as f:
+            writer = csv.writer(f)
+
+            # ヘッダー
+            writer.writerow([
+                '動画タイトル',
+                'URL',
+                'チャンネル名',
+                '再生回数',
+                '登録者数',
+                'バズ倍率',
+                '動画の長さ（秒）',
+                '投稿日'
+            ])
+
+            # データ（バズ倍率でソート）
+            sorted_videos = sorted(videos, key=lambda v: v.get('buzz_ratio', 0), reverse=True)
+
+            for video in sorted_videos:
+                url = f"https://www.youtube.com/watch?v={video['video_id']}"
+                buzz_ratio = video.get('buzz_ratio', 0)
+                writer.writerow([
+                    video['title'],
+                    url,
+                    video['channel_title'],
+                    video['view_count'],
+                    video['subscriber_count'],
+                    f"{buzz_ratio:.2f}x",
+                    video['duration_seconds'],
+                    video['published_at']
+                ])
+
+        print(f"✅ CSV出力完了: {os.path.join('output', filename)}")
+        return os.path.join('output', filename)
+
+    def _execute_with_retry(self, request, max_retries: int = 3):
+        """
+        APIリクエストをリトライ付きで実行
+
+        Args:
+            request: APIリクエスト
+            max_retries: 最大リトライ回数
+
+        Returns:
+            APIレスポンス
+        """
+        for attempt in range(max_retries):
+            try:
+                return request.execute()
+            except HttpError as e:
+                if e.resp.status in [500, 503]:  # サーバーエラー
+                    if attempt < max_retries - 1:
+                        wait_time = 2 ** attempt  # 指数バックオフ
+                        print(f"⚠️  サーバーエラー発生。{wait_time}秒後にリトライします...")
+                        time.sleep(wait_time)
+                    else:
+                        raise
+                else:
+                    raise
+
+        return None
+
+
+def main():
+    """メイン処理"""
+    # コマンドライン引数のパース
+    parser = argparse.ArgumentParser(
+        description='YouTube動画検索・フィルタリングスクリプト（バズ動画発見版）',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+使用例:
+  # デフォルトで keyword="の" で検索
+  python search_youtube_buzz.py
+
+  # キーワードを変更
+  python search_youtube_buzz.py --keyword "！"
+
+  # 登録者数の条件を変更
+  python search_youtube_buzz.py --keyword "の" --max-subscribers 5000
+
+  # 最大取得数を変更
+  python search_youtube_buzz.py --max-results 100
+
+  # YouTube Shortsを除外
+  python search_youtube_buzz.py --exclude-shorts
+
+  # バズ倍率を変更（デフォルト: 3.0）
+  python search_youtube_buzz.py --buzz-multiplier 5.0
+
+推奨キーワード:
+  - 日本語動画向け: "の", "を", "に", "は", "！", "？"
+  - 英語動画向け: "a", "i", "the", "!"
+
+初回実行時:
+  1. credentials.json がスクリプトと同じディレクトリに必要です
+  2. ブラウザが自動で開き、Googleアカウントで認証します
+  3. 認証後、token.json が自動生成されます
+
+2回目以降:
+  token.json を使用して自動認証されます
+        """
+    )
+
+    parser.add_argument(
+        '--keyword',
+        type=str,
+        default='の',
+        help='検索キーワード（デフォルト: の）。日本語の助詞を推奨（の/を/に/は/！など）'
+    )
+    parser.add_argument(
+        '--max-results',
+        type=int,
+        default=50,
+        help='検索結果の最大取得数（デフォルト: 50）'
+    )
+    parser.add_argument(
+        '--max-subscribers',
+        type=int,
+        default=10000,
+        help='最大登録者数（デフォルト: 10000）'
+    )
+    parser.add_argument(
+        '--buzz-multiplier',
+        type=float,
+        default=3.0,
+        help='バズ判定倍率（再生回数 ≥ 登録者数 × この値、デフォルト: 3.0）'
+    )
+    parser.add_argument(
+        '--exclude-shorts',
+        action='store_true',
+        help='YouTube Shorts（60秒以下の動画）を除外する'
+    )
+
+    args = parser.parse_args()
+
+    print("=" * 60)
+    print("YouTube動画検索・フィルタリングスクリプト（バズ動画発見版）")
+    print("=" * 60)
+    print(f"検索キーワード: {args.keyword}")
+    print(f"最大取得数: {args.max_results}")
+    print(f"最大登録者数: {args.max_subscribers:,}人")
+    print(f"バズ判定条件: 再生回数 ≥ 登録者数 × {args.buzz_multiplier}")
+    print(f"投稿期間: 半年以内（6ヶ月前〜現在）")
+    if args.exclude_shorts:
+        print(f"Shorts除外: 有効（60秒以下の動画を除外）")
+    print("=" * 60)
+    print()
+
+    try:
+        # YouTubeBuzzSearcherインスタンスを作成（OAuth2認証）
+        searcher = YouTubeBuzzSearcher()
+
+        # 動画を検索
+        videos = searcher.search_videos(
+            keyword=args.keyword,
+            max_results=args.max_results,
+            published_after_months=6
+        )
+
+        if not videos:
+            print("⚠️  検索結果が0件です")
+            return
+
+        # フィルタリング
+        filtered_videos = searcher.filter_videos(
+            videos=videos,
+            max_subscribers=args.max_subscribers,
+            buzz_multiplier=args.buzz_multiplier,
+            exclude_shorts=args.exclude_shorts
+        )
+
+        if not filtered_videos:
+            print("⚠️  条件に合致する動画が見つかりませんでした")
+            return
+
+        # CSV出力
+        filename = searcher.export_to_csv(filtered_videos, args.keyword)
+
+        print()
+        print("=" * 60)
+        print(f"🎉 完了!")
+        print(f"   抽出件数: {len(filtered_videos)}件")
+        print(f"   出力ファイル: {filename}")
+        print("=" * 60)
+
+    except HttpError as e:
+        print(f"❌ YouTube API エラー: {e}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"❌ エラーが発生しました: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+
+
+if __name__ == '__main__':
+    main()

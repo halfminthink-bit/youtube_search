@@ -4,6 +4,23 @@ YouTube Data API v3を使用して、特定の条件に合う動画を検索・�
 
 **⚠️ OAuth2認証対応版**: YouTube Data API v3のsearch.listエンドポイントがAPI Key認証をサポートしなくなったため、OAuth2認証に対応しました。
 
+## スクリプト一覧
+
+このリポジトリには2つのスクリプトが含まれています：
+
+### 1. `search_youtube.py` - 通常検索版
+特定のキーワードで動画を検索し、再生回数と登録者数で絞り込みます。
+
+### 2. `search_youtube_buzz.py` - バズ動画発見版 🎯
+キーワードに依存せず、**伸びている動画**（登録者数に対して再生回数が多い動画）を発見するツールです。
+
+**特徴**:
+- 汎用的なひらがなで広範囲に検索（"の", "を", "に", "は", "！"など）
+- 日付順ソート（最新順）
+- バズ倍率による判定（再生回数 ≥ 登録者数 × 3）
+- YouTube Shorts除外機能
+- バズ倍率でソートされたCSV出力
+
 ## 機能
 
 - キーワードによる動画検索
@@ -97,13 +114,15 @@ python search_youtube.py --keyword "料理"
 
 ## 使い方
 
-### 基本的な使い方
+### search_youtube.py（通常検索版）
+
+#### 基本的な使い方
 
 ```bash
 python search_youtube.py --keyword "料理"
 ```
 
-### オプション指定
+#### オプション指定
 
 ```bash
 # 最大100件取得
@@ -116,7 +135,7 @@ python search_youtube.py --keyword "Python" --min-views 5000 --max-subscribers 1
 python search_youtube.py --keyword "歴史" --exclude-shorts
 ```
 
-### コマンドライン引数
+#### コマンドライン引数
 
 | 引数 | 説明 | デフォルト値 | 必須 |
 |------|------|--------------|------|
@@ -125,6 +144,57 @@ python search_youtube.py --keyword "歴史" --exclude-shorts
 | `--min-views` | 最小再生回数 | 10000 | ❌ |
 | `--max-subscribers` | 最大登録者数 | 5000 | ❌ |
 | `--exclude-shorts` | YouTube Shorts（60秒以下）を除外 | False | ❌ |
+
+---
+
+### search_youtube_buzz.py（バズ動画発見版） 🎯
+
+#### 基本的な使い方
+
+```bash
+# デフォルトで keyword="の" で検索
+python search_youtube_buzz.py
+```
+
+#### オプション指定
+
+```bash
+# キーワードを変更
+python search_youtube_buzz.py --keyword "！"
+
+# 登録者数の条件を変更
+python search_youtube_buzz.py --keyword "の" --max-subscribers 5000
+
+# 最大取得数を変更
+python search_youtube_buzz.py --max-results 100
+
+# YouTube Shortsを除外
+python search_youtube_buzz.py --exclude-shorts
+
+# バズ倍率を変更（デフォルト: 3.0）
+python search_youtube_buzz.py --buzz-multiplier 5.0
+```
+
+#### コマンドライン引数
+
+| 引数 | 説明 | デフォルト値 | 必須 |
+|------|------|--------------|------|
+| `--keyword` | 検索キーワード | の | ❌ |
+| `--max-results` | 検索結果の最大取得数 | 50 | ❌ |
+| `--max-subscribers` | 最大登録者数 | 10000 | ❌ |
+| `--buzz-multiplier` | バズ判定倍率 | 3.0 | ❌ |
+| `--exclude-shorts` | YouTube Shorts（60秒以下）を除外 | False | ❌ |
+
+#### 推奨キーワード
+
+- **日本語動画向け**: `の`, `を`, `に`, `は`, `！`, `？`
+- **英語動画向け**: `a`, `i`, `the`, `!`
+
+#### フィルタリング条件
+
+1. **チャンネル登録者数** ≤ max_subscribers（デフォルト: 10,000人）
+2. **再生回数** ≥ 登録者数 × buzz_multiplier（デフォルト: 3.0）
+3. **YouTube Shorts除外**（オプション）: 60秒以下の動画を除外
 
 ### ヘルプ表示
 
@@ -136,11 +206,19 @@ python search_youtube.py --help
 
 ### ファイル名
 
-`youtube_results_{検索キーワード}_{実行日時}.csv`
+#### search_youtube.py
+`output/youtube_results_{検索キーワード}_{実行日時}.csv`
 
-例: `youtube_results_料理_20231115_143025.csv`
+例: `output/youtube_results_料理_20231115_143025.csv`
+
+#### search_youtube_buzz.py
+`output/youtube_buzz_videos_{検索キーワード}_{実行日時}.csv`
+
+例: `output/youtube_buzz_videos_の_20231115_143025.csv`
 
 ### CSV形式
+
+#### search_youtube.py
 
 | 列名 | 説明 |
 |------|------|
@@ -151,12 +229,37 @@ python search_youtube.py --help
 | 動画の長さ（秒） | 動画の長さ（秒単位） |
 | 登録者数 | チャンネルの登録者数 |
 
+#### search_youtube_buzz.py（バズ動画発見版）
+
+| 列名 | 説明 |
+|------|------|
+| 動画タイトル | YouTubeの動画タイトル |
+| URL | 動画のURL（https://www.youtube.com/watch?v=...） |
+| チャンネル名 | チャンネルの名前 |
+| 再生回数 | 動画の再生回数 |
+| 登録者数 | チャンネルの登録者数 |
+| **バズ倍率** | 再生回数 ÷ 登録者数（例: 4.29x） |
+| 動画の長さ（秒） | 動画の長さ（秒単位） |
+| 投稿日 | 動画の投稿日時 |
+
+**注**: バズ倍率でソートされて出力されます（高い順）
+
 ### サンプル出力
+
+#### search_youtube.py
 
 ```csv
 動画タイトル,url,チャンネル名,再生回数,動画の長さ（秒）,登録者数
 初心者でも簡単！パスタの作り方,https://www.youtube.com/watch?v=abc123,料理チャンネル,15000,180,3000
 時短レシピ！10分でできるカレー,https://www.youtube.com/watch?v=def456,クッキングTV,25000,600,4500
+```
+
+#### search_youtube_buzz.py
+
+```csv
+動画タイトル,URL,チャンネル名,再生回数,登録者数,バズ倍率,動画の長さ（秒）,投稿日
+初心者でも簡単！プログラミング入門,https://www.youtube.com/watch?v=abc123,テックチャンネル,15000,3500,4.29x,600,2024-11-01T12:00:00Z
+【爆笑】面白すぎる猫動画集,https://www.youtube.com/watch?v=def456,ペット動画,30000,8000,3.75x,120,2024-11-05T15:30:00Z
 ```
 
 ## API クオータ制限について
@@ -278,15 +381,20 @@ MIT License
 
 ```
 youtube_search/
-├── search_youtube.py      # メインスクリプト（OAuth2認証版）
-├── credentials.json       # OAuth2クライアントID（git管理外）
-├── token.json            # アクセストークン（自動生成・git管理外）
-├── requirements.txt       # 依存ライブラリ
-├── .gitignore            # git除外ファイル設定
-└── README.md             # このファイル
+├── search_youtube.py          # メインスクリプト（通常検索版・OAuth2認証版）
+├── search_youtube_buzz.py     # バズ動画発見版（新規）
+├── credentials.json           # OAuth2クライアントID（git管理外）
+├── token.json                # アクセストークン（自動生成・git管理外）
+├── requirements.txt           # 依存ライブラリ
+├── .gitignore                # git除外ファイル設定
+├── output/                   # 出力ディレクトリ（自動生成）
+│   └── *.csv                # 検索結果のCSVファイル
+└── README.md                 # このファイル
 ```
 
 ### 主要クラス・メソッド
+
+#### search_youtube.py
 
 - `YouTubeSearcher`: メインクラス
   - `search_videos()`: キーワードで動画を検索
@@ -294,6 +402,15 @@ youtube_search/
   - `get_channel_subscribers()`: チャンネルの登録者数を取得（キャッシュあり）
   - `filter_videos()`: 条件に合う動画をフィルタリング
   - `export_to_csv()`: CSV形式で出力
+
+#### search_youtube_buzz.py
+
+- `YouTubeBuzzSearcher`: メインクラス（バズ動画発見版）
+  - `search_videos()`: 汎用的なキーワードで動画を検索（日付順）
+  - `get_video_statistics()`: 動画の再生回数・長さを取得
+  - `get_channel_subscribers()`: チャンネルの登録者数を取得（キャッシュあり）
+  - `filter_videos()`: バズ倍率で動画をフィルタリング
+  - `export_to_csv()`: CSV形式で出力（バズ倍率でソート）
 
 ## サポート
 
