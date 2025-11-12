@@ -56,57 +56,112 @@ class InnerTubeSearcher:
 
     def fetch_trending_videos(self) -> List[str]:
         """
-        Trending動画のIDを取得
+        検索エンドポイントを使って人気動画のIDを取得
+
+        複数のキーワードで検索して動画を収集します。
 
         Returns:
             動画IDのリスト
         """
-        print("📊 Trending動画を取得中...")
+        print("📊 人気動画を検索中...")
+
+        # 幅広いジャンルのキーワード（日本語）
+        keywords = [
+            "人気",
+            "おすすめ",
+            "話題",
+            "バズ",
+            "トレンド"
+        ]
+
+        all_video_ids = []
 
         try:
-            # Trendingページを取得
-            # paramsを削除してシンプルにbrowse_idだけで試す
-            data = self.client.browse("FEtrending")
+            for keyword in keywords:
+                try:
+                    # searchエンドポイントを使用
+                    data = self.client.search(query=keyword)
 
-            # デバッグ用: レスポンスを保存
-            self._save_debug_response(data, 'trending_response.json')
+                    # デバッグ用: レスポンスを保存
+                    self._save_debug_response(data, f'search_{keyword}_response.json')
 
-            # 動画IDを抽出
-            video_ids = self.parse_video_ids(data)
+                    # 動画IDを抽出
+                    video_ids = self.parse_video_ids(data)
+                    all_video_ids.extend(video_ids)
 
-            print(f"✅ Trending動画を {len(video_ids)} 件取得しました")
-            return video_ids
+                    print(f"  ✅ '{keyword}' で {len(video_ids)} 件取得")
+
+                    # レート制限対策
+                    time.sleep(0.5)
+
+                except Exception as e:
+                    print(f"  ⚠️  '{keyword}' の検索に失敗: {e}")
+                    logger.warning(f"検索エラー ({keyword}): {e}")
+                    continue
+
+            # 重複削除
+            unique_video_ids = list(set(all_video_ids))
+            print(f"✅ 合計 {len(unique_video_ids)} 件の動画を取得しました（重複除去後）")
+            return unique_video_ids
 
         except Exception as e:
-            print(f"⚠️  Trending動画の取得に失敗: {e}")
-            logger.error(f"Trending動画取得エラー: {e}", exc_info=True)
+            print(f"⚠️  動画検索に失敗: {e}")
+            logger.error(f"検索エラー: {e}", exc_info=True)
             return []
 
     def fetch_home_feed_videos(self) -> List[str]:
         """
-        ホームフィード（おすすめ）動画のIDを取得
+        検索エンドポイントを使って様々なジャンルの動画を取得
+
+        複数のジャンルキーワードで検索して動画を収集します。
 
         Returns:
             動画IDのリスト
         """
-        print("🏠 ホームフィード動画を取得中...")
+        print("🏠 様々なジャンルの動画を検索中...")
+
+        # 様々なジャンルのキーワード
+        keywords = [
+            "料理",
+            "ゲーム",
+            "音楽",
+            "DIY",
+            "旅行"
+        ]
+
+        all_video_ids = []
 
         try:
-            # ホームフィード（おすすめ）を取得
-            data = self.client.browse("FEwhat_to_watch")
+            for keyword in keywords:
+                try:
+                    # searchエンドポイントを使用
+                    data = self.client.search(query=keyword)
 
-            # デバッグ用: レスポンスを保存
-            self._save_debug_response(data, 'home_feed_response.json')
+                    # デバッグ用: レスポンスを保存
+                    self._save_debug_response(data, f'search_genre_{keyword}_response.json')
 
-            # 動画IDを抽出
-            video_ids = self.parse_video_ids(data)
+                    # 動画IDを抽出
+                    video_ids = self.parse_video_ids(data)
+                    all_video_ids.extend(video_ids)
 
-            print(f"✅ ホームフィード動画を {len(video_ids)} 件取得しました")
-            return video_ids
+                    print(f"  ✅ '{keyword}' で {len(video_ids)} 件取得")
+
+                    # レート制限対策
+                    time.sleep(0.5)
+
+                except Exception as e:
+                    print(f"  ⚠️  '{keyword}' の検索に失敗: {e}")
+                    logger.warning(f"検索エラー ({keyword}): {e}")
+                    continue
+
+            # 重複削除
+            unique_video_ids = list(set(all_video_ids))
+            print(f"✅ 合計 {len(unique_video_ids)} 件の動画を取得しました（重複除去後）")
+            return unique_video_ids
 
         except Exception as e:
-            print(f"⚠️  ホームフィード動画の取得に失敗: {e}")
-            logger.error(f"ホームフィード取得エラー: {e}", exc_info=True)
+            print(f"⚠️  動画検索に失敗: {e}")
+            logger.error(f"検索エラー: {e}", exc_info=True)
             return []
 
     def parse_video_ids(self, response: dict) -> List[str]:
@@ -472,8 +527,8 @@ def main():
     print("  - 再生回数: チャンネル登録者数の3倍以上")
     print()
     print("【データソース】")
-    print("  - YouTube Trending動画")
-    print("  - YouTube ホームフィード（おすすめ）")
+    print("  - 人気キーワード検索（人気、おすすめ、話題、バズ、トレンド）")
+    print("  - ジャンル別検索（料理、ゲーム、音楽、DIY、旅行）")
     print()
     print("="*60)
     print()
@@ -487,14 +542,14 @@ def main():
         print("📡 ステップ1: 動画ID収集")
         print("="*60)
 
-        # Trending動画を取得
-        trending_ids = searcher.fetch_trending_videos()
+        # 人気キーワードで動画を検索
+        popular_ids = searcher.fetch_trending_videos()
 
-        # ホームフィード動画を取得
-        home_ids = searcher.fetch_home_feed_videos()
+        # ジャンル別で動画を検索
+        genre_ids = searcher.fetch_home_feed_videos()
 
         # 重複削除
-        all_video_ids = list(set(trending_ids + home_ids))
+        all_video_ids = list(set(popular_ids + genre_ids))
         print(f"\n✅ 合計 {len(all_video_ids)} 件の動画IDを収集（重複除去後）")
 
         if not all_video_ids:
