@@ -2,3 +2,9 @@ google-api-python-client==2.111.0
 google-auth-oauthlib==1.2.0
 google-auth-httplib2==0.2.0
 isodate==0.6.1
+
+# InnerTube API版の依存関係
+innertube>=2.1.19
+requests>=2.31.0
+pandas>=2.0.0
+tqdm>=4.66.0
