@@ -65,8 +65,8 @@ class InnerTubeSearcher:
 
         try:
             # Trendingページを取得
-            # params="4gIOGgxtb3N0X3BvcHVsYXI=" は "most_popular" のbase64エンコード
-            data = self.client.browse("FEtrending", params="4gIOGgxtb3N0X3BvcHVsYXI=")
+            # paramsを削除してシンプルにbrowse_idだけで試す
+            data = self.client.browse("FEtrending")
 
             # デバッグ用: レスポンスを保存
             self._save_debug_response(data, 'trending_response.json')
